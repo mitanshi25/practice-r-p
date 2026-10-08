@@ -237,6 +237,13 @@ resource "aws_apigatewayv2_route" "get_item" {
   target    = "integrations/${aws_apigatewayv2_integration.get_item.id}"
 }
 
+# Second route on the same Lambda: the handler picks the code path from the route key.
+resource "aws_apigatewayv2_route" "validation" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /validation"
+  target    = "integrations/${aws_apigatewayv2_integration.get_item.id}"
+}
+
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "$default"
