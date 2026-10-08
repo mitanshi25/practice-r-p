@@ -1,0 +1,62 @@
+name: Deploy Lambdas
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  LAYER_NAME: shared-deps
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build and publish layer
+        id: layer
+        run: |
+          if ! grep -qvE '^\s*(#|$)' layers/deps/requirements.txt; then
+            echo "No dependencies listed, skipping layer"
+            exit 0
+          fi
+          mkdir -p build/python
+          pip install -r layers/deps/requirements.txt -t build/python \
+            --platform manylinux2014_x86_64 --implementation cp \
+            --python-version 3.12 --only-binary=:all:
+          (cd build && zip -r ../layer.zip python)
+          ARN=$(aws lambda publish-layer-version \
+            --layer-name "$LAYER_NAME" \
+            --zip-file fileb://layer.zip \
+            --compatible-runtimes python3.12 \
+            --compatible-architectures x86_64 \
+            --query LayerVersionArn --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Attach layer to functions
+        if: steps.layer.outputs.arn != ''
+        run: |
+          for fn in publish-file get-item; do
+            aws lambda update-function-configuration --function-name "$fn" --layers "${{ steps.layer.outputs.arn }}"
+            aws lambda wait function-updated --function-name "$fn"
+          done
+
+      - name: Package
+        run: |
+          (cd lambdas/publish_file && zip -r ../../publish_file.zip .)
+          (cd lambdas/get_item && zip -r ../../get_item.zip .)
+
+      - name: Deploy
+        run: |
+          aws lambda update-function-code --function-name publish-file --zip-file fileb://publish_file.zip
+          aws lambda update-function-code --function-name get-item --zip-file fileb://get_item.zip
